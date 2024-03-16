@@ -1,12 +1,12 @@
 package codeanalyzer;
 
-import java.io.File;
-import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import com.github.javaparser.ParserConfiguration;
-import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.MethodCallExpr;
@@ -14,14 +14,20 @@ import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
+import com.github.javaparser.utils.SourceRoot;
 
 public class Main {
     
-    public static void main(String[] args) throws FileNotFoundException {
-        String srcDir = System.getProperty("user.dir") + "\\src\\main\\java\\codeanalyzer";
-        File f = new File(srcDir + "\\Main.java");
-        StaticJavaParser.setConfiguration(new ParserConfiguration().setSymbolResolver(new JavaSymbolSolver(new CombinedTypeSolver(new ReflectionTypeSolver(false), new JavaParserTypeSolver(srcDir)))));
-        CompilationUnit cu = StaticJavaParser.parse(f);
+    public static void main(String[] args) throws IOException {
+        Path sourcePath = Paths.get(System.getProperty("user.dir") + "/src/main/java/");
+        SourceRoot sourceRoot = new SourceRoot(sourcePath);
+        sourceRoot.setParserConfiguration(new ParserConfiguration().setSymbolResolver(new JavaSymbolSolver(new CombinedTypeSolver(new ReflectionTypeSolver(false), new JavaParserTypeSolver(sourcePath)))));
+        sourceRoot.tryToParse();
+        List<CompilationUnit> cu = sourceRoot.getCompilationUnits();
+        cu.forEach(Main::anaylze);
+    }
+
+    public static void anaylze(CompilationUnit cu) {
         List<MethodDeclaration> methods = cu.findAll(MethodDeclaration.class)
             .stream()
             .filter(m -> !m.isPrivate())
