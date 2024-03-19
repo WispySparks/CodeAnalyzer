@@ -46,6 +46,7 @@ public class Main {
         System.out.println("Unused Methods:");
         for (ResolvedMethodDeclaration method : unusedMethods) {
             String sig = method.getSignature();
+            // Ignore main, equals and hashcode method
             if ((sig.equals("main(java.lang.String[])") && method.getReturnType().isVoid())
             || (sig.endsWith("equals(java.lang.Object)") && method.getReturnType().isPrimitive() 
                 && method.getReturnType().asPrimitive() == ResolvedPrimitiveType.BOOLEAN)
