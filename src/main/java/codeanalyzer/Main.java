@@ -3,18 +3,20 @@ package codeanalyzer;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ParserConfiguration.LanguageLevel;
 import com.github.javaparser.ast.CompilationUnit;
-import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.MethodReferenceExpr;
+import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
+import com.github.javaparser.resolution.types.ResolvedPrimitiveType;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
@@ -29,63 +31,80 @@ public class Main {
             sourcePath = Paths.get(args[0]);
         }
         SourceRoot sourceRoot = new SourceRoot(sourcePath);
-        sourceRoot.setParserConfiguration(new ParserConfiguration()
+        sourceRoot.getParserConfiguration()
             .setSymbolResolver(new JavaSymbolSolver(
                 new CombinedTypeSolver(new ReflectionTypeSolver(false), new JavaParserTypeSolver(sourcePath)))
             )
-            .setLanguageLevel(LanguageLevel.JAVA_17)
-        );
+            .setLanguageLevel(LanguageLevel.JAVA_17);
         var parseResults = sourceRoot.tryToParse();
         System.out.println("Parse Results: " + parseResults);
-        List<CompilationUnit> cu = sourceRoot.getCompilationUnits();
-        cu.forEach(Main::anaylze);
+        List<CompilationUnit> units = sourceRoot.getCompilationUnits();
+        Set<ResolvedMethodDeclaration> unusedMethods = new HashSet<>();
+        for (CompilationUnit unit : units) {
+            unusedMethods.addAll(getUnusedMethods(unit));
+        }
+        System.out.println("Unused Methods:");
+        for (ResolvedMethodDeclaration method : unusedMethods) {
+            String sig = method.getSignature();
+            if ((sig.equals("main(java.lang.String[])") && method.getReturnType().isVoid())
+            || (sig.endsWith("equals(java.lang.Object)") && method.getReturnType().isPrimitive() 
+                && method.getReturnType().asPrimitive() == ResolvedPrimitiveType.BOOLEAN)
+            || (sig.endsWith("hashCode()") && method.getReturnType().isPrimitive() 
+                && method.getReturnType().asPrimitive() == ResolvedPrimitiveType.INT))
+            continue;
+            System.out.println(method.getQualifiedSignature());
+        }
+        System.out.println("PROGRAM END");
     }
 
-    public static void anaylze(CompilationUnit cu) {
-        //! https://github.com/javaparser/javaparser/issues/1881 solves all my problems, ResolvedMethodDeclaration 
-        Map<ClassOrInterfaceDeclaration, MethodDeclaration> methodClassPairs = new HashMap<>();
-        List<MethodDeclaration> methods = cu.findAll(MethodDeclaration.class)
+    public static Set<ResolvedMethodDeclaration> getUnusedMethods(CompilationUnit cu) {
+        Set<WrapperRMD> definedMethods;
+        Set<WrapperRMD> usedMethods;
+        Set<ResolvedMethodDeclaration> unusedMethods;
+        List<MethodDeclaration> methodDeclarations = cu.findAll(MethodDeclaration.class)
             .stream()
             .filter(m -> !m.isPrivate())
             .collect(Collectors.toList());
         List<MethodCallExpr> methodCalls = cu.findAll(MethodCallExpr.class); 
         List<MethodReferenceExpr> methodReferences = cu.findAll(MethodReferenceExpr.class);
-        System.out.println("Non Private Method Declarations:");
-        methods.forEach(m -> {
-            String methodParent = "[No Parent]";
-            if (m.getParentNode().isPresent()) {
-                if (m.getParentNode().get() instanceof ClassOrInterfaceDeclaration clazz) {
-                    methodParent = clazz.getFullyQualifiedName().orElse("[Local Declaration]");
-                    methodClassPairs.put(clazz, m);
-                }
-            };
-            System.out.println(methodParent + "." + m.getSignature());
-        });
-        System.out.println("Method Calls:");
-        methodCalls.forEach(call -> {
-            if (call.getScope().isPresent()) {
-                var scope = call.getScope().get();
-                var resolvedType = scope.calculateResolvedType();
-                if (resolvedType.isReferenceType()) {
-                    System.out.print("Reference: " + resolvedType.asReferenceType().getQualifiedName());
-                }
-                else if (resolvedType.isConstraint()) {
-                    System.out.print("Constraint: " + resolvedType.asConstraintType().getBound().describe());
-                }
-                else {
-                    System.out.print("Different Type: " + resolvedType);
-                }
-                System.out.print("." + call.getNameAsString() + "()\n");
-            }
-            else {
-                System.out.println("No Scope: " + call);
-            };
-        });
-        System.out.println("Method References:");
-        methodReferences.forEach(reference -> {
-            var resolvedType = reference.getScope().calculateResolvedType();
-            System.out.println(resolvedType.describe() + "." + reference.getIdentifier() + "()");
-        });
+        definedMethods = methodDeclarations
+            .stream()
+            .map(m -> new WrapperRMD(m.resolve()))
+            .collect(Collectors.toSet());
+        usedMethods = Stream.concat( 
+            methodCalls
+                .stream()
+                .map(MethodCallExpr::resolve),
+            methodReferences
+                .stream()
+                .map(MethodReferenceExpr::resolve)
+        ).map(f -> new WrapperRMD(f))
+        .distinct()
+        .collect(Collectors.toSet());
+        definedMethods.removeAll(usedMethods);
+        unusedMethods = definedMethods.stream().map(WrapperRMD::unwrap).collect(Collectors.toSet());
+        return unusedMethods;
+    }   
+
+    private static class WrapperRMD {
+        private final ResolvedMethodDeclaration method;
+        public WrapperRMD(ResolvedMethodDeclaration method) {
+            this.method = method;
+        }
+        public ResolvedMethodDeclaration unwrap() {
+            return method;
+        }
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            WrapperRMD other = (WrapperRMD) o;
+            return Objects.equals(method.getQualifiedSignature(), other.unwrap().getQualifiedSignature());
+        }
+        @Override
+        public int hashCode() {
+            return Objects.hash(method.getQualifiedSignature());
+        }
     }
 
 }
