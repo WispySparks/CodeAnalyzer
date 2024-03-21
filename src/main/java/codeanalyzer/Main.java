@@ -3,6 +3,7 @@ package codeanalyzer;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -12,13 +13,15 @@ import java.util.stream.Stream;
 
 import com.github.javaparser.ParserConfiguration.LanguageLevel;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.MethodReferenceExpr;
+import com.github.javaparser.resolution.TypeSolver;
 import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
-import com.github.javaparser.resolution.types.ResolvedPrimitiveType;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
 import com.github.javaparser.utils.SourceRoot;
@@ -30,11 +33,15 @@ public class Main {
         if (args.length > 0) {
             sourcePath = Paths.get(args[0]);
         }
+        List<TypeSolver> typeSolvers = new ArrayList<>();
+        typeSolvers.add(new ReflectionTypeSolver(false));
+        typeSolvers.add(new JavaParserTypeSolver(sourcePath));
+        for (int i = 1; i < args.length; i++) {
+            typeSolvers.add(new JarTypeSolver(args[i]));
+        }
         SourceRoot sourceRoot = new SourceRoot(sourcePath);
         sourceRoot.getParserConfiguration()
-            .setSymbolResolver(new JavaSymbolSolver(
-                new CombinedTypeSolver(new ReflectionTypeSolver(false), new JavaParserTypeSolver(sourcePath)))
-            )
+            .setSymbolResolver(new JavaSymbolSolver(new CombinedTypeSolver(typeSolvers)))
             .setLanguageLevel(LanguageLevel.JAVA_17);
         var parseResults = sourceRoot.tryToParse();
         System.out.println("Parse Results: " + parseResults);
@@ -43,25 +50,23 @@ public class Main {
         for (CompilationUnit unit : units) {
             unusedMethods.addAll(getUnusedMethods(unit));
         }
-        System.out.println("Unused Methods:");
+        Set<String> objectMethods = typeSolvers.get(0).solveType("java.lang.Object").getDeclaredMethods().stream().map(m -> m.getSignature()).collect(Collectors.toSet());
+        unusedMethods.removeIf(m -> objectMethods.contains(m.getSignature()));
+        unusedMethods.removeIf(m -> m.getSignature().equals("main(java.lang.String[])") && m.getReturnType().isVoid());
+        String s = unusedMethods.size() == 0 ? "No Unused Methods." : "Unused Methods:";
+        System.out.println(s);
         for (ResolvedMethodDeclaration method : unusedMethods) {
-            String sig = method.getSignature();
-            // Ignore main, equals and hashcode method
-            if ((sig.equals("main(java.lang.String[])") && method.getReturnType().isVoid())
-            || (sig.endsWith("equals(java.lang.Object)") && method.getReturnType().isPrimitive() 
-                && method.getReturnType().asPrimitive() == ResolvedPrimitiveType.BOOLEAN)
-            || (sig.endsWith("hashCode()") && method.getReturnType().isPrimitive() 
-                && method.getReturnType().asPrimitive() == ResolvedPrimitiveType.INT))
-            continue;
-            System.out.println(method.getQualifiedSignature());
+            Node methodAst = method.toAst().get();
+            Path filePath = findCompilationUnit(methodAst).getStorage().get().getPath();
+            System.out.println(method.getQualifiedSignature() + " - " + filePath + ":" + methodAst.getBegin().get().line);
         }
-        System.out.println("PROGRAM END");
     }
 
-    public static Set<ResolvedMethodDeclaration> getUnusedMethods(CompilationUnit cu) {
+    public static void foo() {}
+
+    private static Set<ResolvedMethodDeclaration> getUnusedMethods(CompilationUnit cu) {
         Set<WrapperRMD> definedMethods;
         Set<WrapperRMD> usedMethods;
-        Set<ResolvedMethodDeclaration> unusedMethods;
         List<MethodDeclaration> methodDeclarations = cu.findAll(MethodDeclaration.class)
             .stream()
             .filter(m -> !m.isPrivate())
@@ -83,9 +88,15 @@ public class Main {
         .distinct()
         .collect(Collectors.toSet());
         definedMethods.removeAll(usedMethods);
-        unusedMethods = definedMethods.stream().map(WrapperRMD::unwrap).collect(Collectors.toSet());
-        return unusedMethods;
+        return definedMethods.stream().map(WrapperRMD::unwrap).collect(Collectors.toSet());
     }   
+
+    private static CompilationUnit findCompilationUnit(Node node) {
+        while (node != null && !(node instanceof CompilationUnit)) {
+            node = node.getParentNode().orElse(null);
+        }
+        return (CompilationUnit) node;
+    }
 
     private static class WrapperRMD {
         private final ResolvedMethodDeclaration method;
