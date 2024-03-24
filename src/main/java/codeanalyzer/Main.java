@@ -17,9 +17,12 @@ import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.MethodReferenceExpr;
+import com.github.javaparser.resolution.MethodAmbiguityException;
 import com.github.javaparser.resolution.TypeSolver;
+import com.github.javaparser.resolution.UnsolvedSymbolException;
 import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
+import com.github.javaparser.symbolsolver.reflectionmodel.ReflectionMethodDeclaration;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
@@ -27,9 +30,13 @@ import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeS
 import com.github.javaparser.utils.SourceRoot;
 
 public class Main {
+
+    private static final Path defaultSourcePath = Paths.get("src/main/java");
+    private static final String mainSignature = "main(java.lang.String[])";
+    private static TypeSolver typeSolver;
     
     public static void main(String[] args) throws IOException {
-        Path sourcePath = Paths.get(System.getProperty("user.dir") + "/src/main/java/");
+        Path sourcePath = defaultSourcePath;
         if (args.length > 0) {
             sourcePath = Paths.get(args[0]);
         }
@@ -39,30 +46,34 @@ public class Main {
         for (int i = 1; i < args.length; i++) {
             typeSolvers.add(new JarTypeSolver(args[i]));
         }
+        typeSolver = new CombinedTypeSolver(typeSolvers);
         SourceRoot sourceRoot = new SourceRoot(sourcePath);
         sourceRoot.getParserConfiguration()
-            .setSymbolResolver(new JavaSymbolSolver(new CombinedTypeSolver(typeSolvers)))
+            .setSymbolResolver(new JavaSymbolSolver(typeSolver))
             .setLanguageLevel(LanguageLevel.JAVA_17);
         var parseResults = sourceRoot.tryToParse();
-        System.out.println("Parse Results: " + parseResults);
+        parseResults.forEach(r -> {
+            if (!r.isSuccessful()) System.out.println(r);
+        });        
         List<CompilationUnit> units = sourceRoot.getCompilationUnits();
         Set<ResolvedMethodDeclaration> unusedMethods = new HashSet<>();
         for (CompilationUnit unit : units) {
             unusedMethods.addAll(getUnusedMethods(unit));
         }
-        Set<String> objectMethods = typeSolvers.get(0).solveType("java.lang.Object").getDeclaredMethods().stream().map(m -> m.getSignature()).collect(Collectors.toSet());
+        Set<String> objectMethods = typeSolvers.get(0).getSolvedJavaLangObject().getDeclaredMethods().stream()
+            .map(m -> m.getSignature())
+            .collect(Collectors.toSet());
         unusedMethods.removeIf(m -> objectMethods.contains(m.getSignature()));
-        unusedMethods.removeIf(m -> m.getSignature().equals("main(java.lang.String[])") && m.getReturnType().isVoid());
+        unusedMethods.removeIf(m -> m.getSignature().equals(mainSignature) && m.getReturnType().isVoid());
         String s = unusedMethods.size() == 0 ? "No Unused Methods." : "Unused Methods:";
         System.out.println(s);
         for (ResolvedMethodDeclaration method : unusedMethods) {
             Node methodAst = method.toAst().get();
-            Path filePath = findCompilationUnit(methodAst).getStorage().get().getPath();
+            String filePath = findCompilationUnit(methodAst).getStorage().get().getPath().toString();
+            if (filePath == null) filePath = "?";
             System.out.println(method.getQualifiedSignature() + " - " + filePath + ":" + methodAst.getBegin().get().line);
         }
     }
-
-    public static void foo() {}
 
     private static Set<ResolvedMethodDeclaration> getUnusedMethods(CompilationUnit cu) {
         Set<WrapperRMD> definedMethods;
@@ -80,10 +91,27 @@ public class Main {
         usedMethods = Stream.concat( 
             methodCalls
                 .stream()
-                .map(MethodCallExpr::resolve),
+                .map(m -> {
+                    ResolvedMethodDeclaration r = new ReflectionMethodDeclaration(Object.class.getMethods()[0], typeSolver);
+                    try {
+                        r = m.resolve();
+                    } catch (UnsolvedSymbolException | MethodAmbiguityException e) {
+                        // System.out.println(findCompilationUnit(m).getStorage().get().getPath() + ":" + m.getBegin().get().line);
+                        // e.printStackTrace();
+                        // System.exit(1);
+                    }
+                    return r;
+                }), // broken?
             methodReferences
                 .stream()
-                .map(MethodReferenceExpr::resolve)
+                .map(m -> {
+                    ResolvedMethodDeclaration r = new ReflectionMethodDeclaration(Object.class.getMethods()[0], typeSolver);
+                    try {
+                        r = m.resolve();
+                    } catch (UnsolvedSymbolException | MethodAmbiguityException e) {
+                    }
+                    return r;
+                }) // broken with new fs
         ).map(f -> new WrapperRMD(f))
         .distinct()
         .collect(Collectors.toSet());

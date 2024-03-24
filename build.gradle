@@ -17,7 +17,10 @@ application {
 }
 
 shadowJar {
-   archiveBaseName.set('CodeAnalyzer')
-   archiveClassifier.set('')
-   archiveVersion.set('1.0.0')
+    archiveBaseName.set('CodeAnalyzer')
+    archiveClassifier.set('')
+    archiveVersion.set('1.0.0')
+    if (project.hasProperty("out")) {
+        destinationDirectory = file(project.getProperty("out"))
+    }
 }
