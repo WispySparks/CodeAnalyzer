@@ -3,8 +3,10 @@ package codeanalyzer;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import spoon.Launcher;
 import spoon.reflect.CtModel;
@@ -22,6 +24,7 @@ public class Main {
     private static final String mainSignature = "main(java.lang.String[])"; 
 
     public static void main(String[] args) throws IOException {
+        //todo invocations in lambdas don't get seen, sometimes interface methods don't get seen? 
         Launcher launcher = new Launcher();
         if (args.length > 0) {
             launcher.addInputResource(args[0]);
@@ -32,7 +35,6 @@ public class Main {
         if (args.length > 1) {
             launcher.getEnvironment().setSourceClasspath(Arrays.stream(args, 1, args.length).toArray(String[]::new));
         }
-        launcher.getEnvironment().setComplianceLevel(languageLevel);
         launcher.buildModel();
         CtModel model = launcher.getModel();
         List<CtMethod<?>> methods = model.getElements(new TypeFilter<>(CtMethod.class));
@@ -52,12 +54,24 @@ public class Main {
                 unusedMethods.add(method);
             }
         }
+        unusedMethods = unusedMethods.stream().sorted(Main::sortMethods).collect(Collectors.toCollection(LinkedHashSet::new));
         String s = unusedMethods.isEmpty() ?  "No Unused Methods." : "Unused Methods:";
         System.out.println(s);
         unusedMethods.forEach(m -> {
-            CtType<?> parent = (CtType<?>) m.getParent();
+            CtType<?> parent = getMethodParent(m);
             System.out.println(parent.getQualifiedName() + "." + m.getSignature() + " - " + parent.getSimpleName() + ".java:" + m.getPosition().getLine());
         });
+    }
+
+    private static CtType<?> getMethodParent(CtMethod<?> method) {
+        return (CtType<?>) method.getParent();
+    }
+
+    private static int sortMethods(CtMethod<?> m1, CtMethod<?> m2) {
+        int lineCompare = 0;
+        if (m1.getPosition().getLine() > m2.getPosition().getLine()) lineCompare = 1;
+        else if (m1.getPosition().getLine() < m2.getPosition().getLine()) lineCompare = -1;
+        return getMethodParent(m1).getQualifiedName().compareTo(getMethodParent(m2).getQualifiedName()) + lineCompare;
     }
 
 }
